@@ -169,7 +169,7 @@ def process_oms_data(df):
 
 # --- 5. MAIN DASHBOARD ---
 def main():
-    st.markdown('<div class="main-header">🎯 Double Date MoM Battle</div>', unsafe_allow_html=True)
+    st.markdown('<div class="main-header">🎯 Double Date Order Tracker </div>', unsafe_allow_html=True)
     
     # --- SIDEBAR CONTROLS ---
     with st.sidebar:
