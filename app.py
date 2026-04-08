@@ -251,22 +251,72 @@ def main():
             fig_mp = px.line(mp_trend, x='Month_Str', y='Order Number', color='Marketplace', markers=True)
             st.plotly_chart(fig_mp, use_container_width=True, key="mp_trend_multi")
 
-    # TAB 2: Marketplace & Logistics (Terpengaruh Global Filter)
+    # TAB 2: Marketplace & Logistics
     with t2:
-        st.subheader(f"📊 Logistics & Platform Share ({', '.join(sel_months)})")
+        st.subheader("📊 Logistics & Platform Share")
+        
+        # --- Filter Khusus Tab 2 ---
+        t2_months = st.multiselect(
+            "📅 Pilih Bulan untuk Logistik & Platform:", 
+            options=campaign_opts, 
+            default=sel_months, # Default mengikuti filter global di sidebar
+            key="t2_month_filter"
+        )
+        
+        # Gunakan data base (df_order) agar filter tab mandiri, tapi jika kosong kembali ke df_order
+        df_t2 = df_order[df_order['Campaign_Month'].isin(t2_months)] if t2_months else df_order
+        
         c_m, c_l = st.columns(2)
         with c_m:
-            mp_share = df_filtered.groupby('Marketplace')['Order Number'].nunique().reset_index()
-            st.plotly_chart(px.pie(mp_share, values='Order Number', names='Marketplace', hole=0.4), key="mp_share_pie")
+            mp_share = df_t2.groupby('Marketplace')['Order Number'].nunique().reset_index()
+            fig_pie = px.pie(mp_share, values='Order Number', names='Marketplace', hole=0.4)
+            fig_pie.update_traces(textinfo='percent+label', textposition='inside')
+            fig_pie.update_layout(showlegend=False, margin=dict(t=10, b=0, l=0, r=0))
+            st.plotly_chart(fig_pie, key="mp_share_pie", use_container_width=True)
+            
         with c_l:
-            log_load = df_filtered.groupby('Shipping Provider')['Order Number'].nunique().nlargest(10).reset_index()
-            st.plotly_chart(px.bar(log_load, x='Order Number', y='Shipping Provider', orientation='h'), key="log_bar")
+            log_load = df_t2.groupby('Shipping Provider')['Order Number'].nunique().nlargest(10).reset_index()
+            log_load = log_load.sort_values('Order Number', ascending=True) # Sortir agar yang terbesar di atas
+            fig_bar = px.bar(log_load, x='Order Number', y='Shipping Provider', orientation='h', color_discrete_sequence=['#F59E0B'])
+            fig_bar.update_traces(texttemplate='%{x:,}', textposition='outside')
+            fig_bar.update_layout(xaxis_title="Total Orders", yaxis_title="", margin=dict(t=10, b=0, l=0, r=0))
+            st.plotly_chart(fig_bar, key="log_bar", use_container_width=True)
 
-    # TAB 3: Hourly Velocity (Terpengaruh Global Filter)
+    # TAB 3: Hourly Velocity
     with t3:
-        st.subheader(f"⏱️ Hourly Peaks ({', '.join(sel_months)})")
-        hr_df = df_filtered.groupby('Order_Hour')['Order Number'].nunique().reset_index()
-        fig_hr = px.bar(hr_df, x='Order_Hour', y='Order Number', color='Order Number')
+        st.subheader("⏱️ Hourly Peaks")
+        
+        # --- Filter Khusus Tab 3 ---
+        t3_months = st.multiselect(
+            "📅 Pilih Bulan untuk Jam Sibuk:", 
+            options=campaign_opts, 
+            default=sel_months,
+            key="t3_month_filter"
+        )
+        
+        df_t3 = df_order[df_order['Campaign_Month'].isin(t3_months)] if t3_months else df_order
+        
+        # Agregasi data jam
+        hr_df = df_t3.groupby('Order_Hour')['Order Number'].nunique().reset_index()
+        
+        # --- PERBAIKAN: Pastikan 24 Jam Lengkap dan Format Sumbu X ---
+        all_hours = pd.DataFrame({'Order_Hour': range(24)})
+        hr_df = pd.merge(all_hours, hr_df, on='Order_Hour', how='left').fillna(0)
+        
+        # Format angka jam menjadi string (00:00, 01:00, dst)
+        hr_df['Hour_Label'] = hr_df['Order_Hour'].apply(lambda x: f"{int(x):02d}:00")
+        
+        fig_hr = px.bar(hr_df, x='Hour_Label', y='Order Number', color='Order Number', color_continuous_scale='Blues')
+        
+        # Paksa Plotly untuk menampilkan semua label jam sebagai kategori
+        fig_hr.update_xaxes(type='category', tickangle=-45)
+        fig_hr.update_traces(texttemplate='%{y:,.0f}', textposition='outside')
+        fig_hr.update_layout(
+            xaxis_title="Jam Order Masuk", 
+            yaxis_title="Total Orders",
+            margin=dict(t=10, b=10, l=10, r=10)
+        )
+        
         st.plotly_chart(fig_hr, use_container_width=True, key="hourly_v")
 
     # TAB 4: Explorer
