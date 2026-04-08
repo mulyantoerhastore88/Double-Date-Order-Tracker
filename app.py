@@ -90,9 +90,9 @@ def force_recompile_and_upload():
         drive_service = build('drive', 'v3', credentials=creds)
         folder_id = "10N4ky9vKH4TVl0PprwfYQDCTeQvLTvXC"
         
-        # --- PERBAIKAN: Nama output diset ke CSV ---
         master_file_name = "MASTER_COMPILED_DATA.csv"
 
+        # Tarik semua file kecuali Master
         query = f"'{folder_id}' in parents and name != '{master_file_name}' and trashed = false"
         results = drive_service.files().list(q=query, fields="files(id, name, mimeType)").execute()
         files = results.get('files', [])
@@ -120,21 +120,28 @@ def force_recompile_and_upload():
         if all_dfs:
             final_df = pd.concat(all_dfs, ignore_index=True)
             
-            # --- PERBAIKAN: Tulis ke memori sebagai CSV. Beban server turun drastis 90%! ---
+            # Tulis ke memori (BytesIO)
             output = io.BytesIO()
             final_df.to_csv(output, index=False)
             output.seek(0)
-            
-            # Hapus file master lama jika ada
-            q_old = f"'{folder_id}' in parents and name = '{master_file_name}' and trashed = false"
-            old_f = drive_service.files().list(q=q_old).execute().get('files', [])
-            for of in old_f: drive_service.files().delete(fileId=of['id']).execute()
-
-            # Upload CSV baru
             media = MediaIoBaseUpload(output, mimetype='text/csv')
-            drive_service.files().create(body={'name': master_file_name, 'parents': [folder_id]}, media_body=media).execute()
             
-            st.sidebar.success("✅ Database Master (CSV) terupdate di Drive!")
+            # --- PERBAIKAN LOGIKA ROBOT (UPDATE BUKAN CREATE) ---
+            # Cari apakah file master sudah ada
+            q_master = f"'{folder_id}' in parents and name = '{master_file_name}' and trashed = false"
+            master_files = drive_service.files().list(q=q_master).execute().get('files', [])
+
+            if master_files:
+                # JIKA ADA: Lakukan 'Update' ke file milik Bapak (Tidak memakan kuota robot)
+                file_id_to_update = master_files[0]['id']
+                drive_service.files().update(fileId=file_id_to_update, media_body=media).execute()
+                st.sidebar.success("✅ Database Master (CSV) berhasil di-update!")
+            else:
+                # Fallback (Jika Bapak belum upload file kosong, robot akan mencoba Create dan error)
+                st.sidebar.warning("Mencoba membuat file baru (Jika error kuota, mohon upload file MASTER_COMPILED_DATA.csv kosong ke Drive)")
+                drive_service.files().create(body={'name': master_file_name, 'parents': [folder_id]}, media_body=media).execute()
+                st.sidebar.success("✅ Database Master (CSV) baru berhasil dibuat!")
+
             return final_df
     except Exception as e:
         st.sidebar.error(f"Gagal Recompile: {e}")
