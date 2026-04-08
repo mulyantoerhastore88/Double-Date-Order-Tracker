@@ -308,7 +308,9 @@ def main():
                 fig_mp = px.pie(mp_df, values='Order Number', names='Marketplace', hole=0.4, color_discrete_sequence=px.colors.qualitative.Pastel)
                 fig_mp.update_traces(textinfo='percent+label', textposition='inside')
                 fig_mp.update_layout(showlegend=False, margin=dict(t=30, b=0, l=0, r=0))
-                st.plotly_chart(fig_mp, use_container_width=True)
+                
+                # --- PERBAIKAN: Tambahkan parameter key di sini ---
+                st.plotly_chart(fig_mp, use_container_width=True, key="pie_chart_marketplace_share")
 
         with col_log:
             st.subheader("🚚 Top 10 Shipping Provider Load")
@@ -316,40 +318,16 @@ def main():
                 # Bersihkan nama kurir yang kosong
                 log_df = df_filtered[df_filtered['Shipping Provider'].notna() & (df_filtered['Shipping Provider'] != '')]
                 
-                # --- PERBAIKAN: Ambil 10 Terbesar Saja ---
                 log_df = log_df.groupby('Shipping Provider')['Order Number'].nunique().reset_index()
-                log_df = log_df.sort_values('Order Number', ascending=True).tail(10) # tail digunakan agar grafik bar plot mengurutkan yang terbesar di atas
+                log_df = log_df.sort_values('Order Number', ascending=True).tail(10)
                 
                 fig_log = px.bar(log_df, x='Order Number', y='Shipping Provider', orientation='h', color_discrete_sequence=['#F59E0B'])
                 fig_log.update_traces(texttemplate='%{x:,}', textposition='outside')
                 fig_log.update_layout(xaxis_title="Total Orders", yaxis_title="", plot_bgcolor='white', margin=dict(t=30, b=0, l=0, r=0))
-                st.plotly_chart(fig_log, use_container_width=True)
-
-    # === TAB 2: MARKETPLACE & LOGISTICS ===
-    with t2:
-        col_mp, col_log = st.columns(2)
-        
-        with col_mp:
-            st.subheader("🛒 Marketplace Share (by Orders)")
-            if 'Marketplace' in df_filtered.columns:
-                mp_df = df_filtered.groupby('Marketplace')['Order Number'].nunique().reset_index()
-                fig_mp = px.pie(mp_df, values='Order Number', names='Marketplace', hole=0.4, color_discrete_sequence=px.colors.qualitative.Pastel)
-                fig_mp.update_traces(textinfo='percent+label', textposition='inside')
-                fig_mp.update_layout(showlegend=False, margin=dict(t=30, b=0, l=0, r=0))
-                st.plotly_chart(fig_mp, use_container_width=True)
-
-        with col_log:
-            st.subheader("🚚 Shipping Provider Load")
-            if 'Shipping Provider' in df_filtered.columns:
-                # Bersihkan nama kurir yang kosong
-                log_df = df_filtered[df_filtered['Shipping Provider'].notna() & (df_filtered['Shipping Provider'] != '')]
-                log_df = log_df.groupby('Shipping Provider')['Order Number'].nunique().reset_index().sort_values('Order Number', ascending=True)
                 
-                fig_log = px.bar(log_df, x='Order Number', y='Shipping Provider', orientation='h', color_discrete_sequence=['#F59E0B'])
-                fig_log.update_traces(texttemplate='%{x:,}', textposition='outside')
-                fig_log.update_layout(xaxis_title="Total Orders", yaxis_title="", plot_bgcolor='white', margin=dict(t=30, b=0, l=0, r=0))
-                st.plotly_chart(fig_log, use_container_width=True)
-
+                # --- PERBAIKAN: Tambahkan parameter key di sini juga agar aman ---
+                st.plotly_chart(fig_log, use_container_width=True, key="bar_chart_shipping_load")
+                
     # === TAB 3: HOURLY VELOCITY ===
     with t3:
         st.subheader("⏱️ Hourly Traffic (Kapan Order Masuk Terbanyak?)")
