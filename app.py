@@ -201,7 +201,7 @@ def main():
     df_order = df.drop_duplicates(subset=['Order Number']).copy()
 
     # Get months for global filter
-    campaign_opts = sorted(df_order['Campaign_Month'].dropna().unique().tolist(), key=lambda x: datetime.strptime(x, '%b %Y'))
+    campaign_opts = sorted(df_order['Campaign_Month'].dropna().unique().tolist(), key=lambda x: datetime.strptime(x.split(' (')[0], '%b %Y'))
     
     with st.sidebar:
         sel_months = st.multiselect("Pilih Bulan:", options=campaign_opts, default=campaign_opts)
