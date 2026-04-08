@@ -224,7 +224,7 @@ def main():
     # === TAB 1: MoM PERFORMANCE ===
     with t1:
         st.subheader("📈 Double Date Battle: Month-over-Month")
-        st.caption("Perbandingan performa antar bulan (contoh: 1.1 vs 2.2 vs 3.3). Data di bawah sudah berdasarkan Unique Order.")
+        st.caption("Perbandingan performa antar bulan. Data di bawah sudah berdasarkan Unique Order.")
         
         # Agregasi per bulan (Urut berdasarkan Waktu)
         mom_df = df_filtered.groupby('Month_Sort').agg(
@@ -260,6 +260,70 @@ def main():
             plot_bgcolor='white', margin=dict(t=10, b=10, l=10, r=10)
         )
         st.plotly_chart(fig_mom, use_container_width=True)
+
+        st.divider()
+
+        # --- TREN MARKETPLACE TOP 6 ---
+        st.subheader("🛒 Trend Order by Marketplace (Top 6)")
+        st.caption("Melihat fluktuasi naik-turun orderan dari bulan ke bulan pada 6 platform penyumbang order terbesar.")
+        
+        if 'Marketplace' in df_filtered.columns:
+            # 1. Cari Top 6 Marketplace
+            top_6_mp = df_filtered.groupby('Marketplace')['Order Number'].nunique().nlargest(6).index.tolist()
+            
+            # 2. Filter hanya Top 6 dan Agregasi per Bulan
+            mp_trend_df = df_filtered[df_filtered['Marketplace'].isin(top_6_mp)].groupby(['Month_Sort', 'Marketplace'])['Order Number'].nunique().reset_index()
+            mp_trend_df['Month_Str'] = mp_trend_df['Month_Sort'].dt.strftime('%b %Y')
+            mp_trend_df = mp_trend_df.sort_values('Month_Sort')
+
+            # 3. Buat Line Chart Interaktif
+            fig_mp_trend = px.line(
+                mp_trend_df, x='Month_Str', y='Order Number', color='Marketplace',
+                markers=True,
+                category_orders={"Month_Str": mom_df['Month_Str'].tolist()},
+                color_discrete_sequence=px.colors.qualitative.Bold
+            )
+            
+            fig_mp_trend.update_layout(
+                height=400, hovermode="x unified",
+                xaxis_title="", yaxis_title="Total Orders",
+                legend_title="Marketplace",
+                plot_bgcolor='white', margin=dict(t=10, b=10, l=10, r=10)
+            )
+            fig_mp_trend.update_yaxes(showgrid=True, gridcolor='rgba(0,0,0,0.05)')
+            fig_mp_trend.update_traces(line=dict(width=3), marker=dict(size=8))
+            
+            st.plotly_chart(fig_mp_trend, use_container_width=True)
+        else:
+            st.info("Kolom 'Marketplace' tidak ditemukan.")
+
+    # === TAB 2: MARKETPLACE & LOGISTICS ===
+    with t2:
+        col_mp, col_log = st.columns(2)
+        
+        with col_mp:
+            st.subheader("🛒 Marketplace Share (by Orders)")
+            if 'Marketplace' in df_filtered.columns:
+                mp_df = df_filtered.groupby('Marketplace')['Order Number'].nunique().reset_index()
+                fig_mp = px.pie(mp_df, values='Order Number', names='Marketplace', hole=0.4, color_discrete_sequence=px.colors.qualitative.Pastel)
+                fig_mp.update_traces(textinfo='percent+label', textposition='inside')
+                fig_mp.update_layout(showlegend=False, margin=dict(t=30, b=0, l=0, r=0))
+                st.plotly_chart(fig_mp, use_container_width=True)
+
+        with col_log:
+            st.subheader("🚚 Top 10 Shipping Provider Load")
+            if 'Shipping Provider' in df_filtered.columns:
+                # Bersihkan nama kurir yang kosong
+                log_df = df_filtered[df_filtered['Shipping Provider'].notna() & (df_filtered['Shipping Provider'] != '')]
+                
+                # --- PERBAIKAN: Ambil 10 Terbesar Saja ---
+                log_df = log_df.groupby('Shipping Provider')['Order Number'].nunique().reset_index()
+                log_df = log_df.sort_values('Order Number', ascending=True).tail(10) # tail digunakan agar grafik bar plot mengurutkan yang terbesar di atas
+                
+                fig_log = px.bar(log_df, x='Order Number', y='Shipping Provider', orientation='h', color_discrete_sequence=['#F59E0B'])
+                fig_log.update_traces(texttemplate='%{x:,}', textposition='outside')
+                fig_log.update_layout(xaxis_title="Total Orders", yaxis_title="", plot_bgcolor='white', margin=dict(t=30, b=0, l=0, r=0))
+                st.plotly_chart(fig_log, use_container_width=True)
 
     # === TAB 2: MARKETPLACE & LOGISTICS ===
     with t2:
