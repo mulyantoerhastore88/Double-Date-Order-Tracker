@@ -41,10 +41,9 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # --- 3. SMART GOOGLE DRIVE LOADER (MASTER FILE LOGIC) ---
-@st.cache_data(ttl=3600) # Simpan di memori 1 jam jika tidak ada perubahan
+@st.cache_data(ttl=3600) 
 def load_smart_compiled_data():
     try:
-        # PENTING: Gunakan scope 'drive' penuh agar bisa menulis/upload file
         scope = ["https://www.googleapis.com/auth/drive"]
         
         if "gcp_service_account" not in st.secrets:
@@ -54,15 +53,15 @@ def load_smart_compiled_data():
         creds = Credentials.from_service_account_info(st.secrets["gcp_service_account"], scopes=scope)
         drive_service = build('drive', 'v3', credentials=creds)
         folder_id = "10N4ky9vKH4TVl0PprwfYQDCTeQvLTvXC"
-        master_file_name = "MASTER_COMPILED_DATA.xlsx"
+        
+        # --- PERBAIKAN: Gunakan format CSV agar RAM tidak jebol ---
+        master_file_name = "MASTER_COMPILED_DATA.csv"
 
-        # 1. Cek apakah file Master sudah ada
         query_master = f"'{folder_id}' in parents and name = '{master_file_name}' and trashed = false"
         master_results = drive_service.files().list(q=query_master, fields="files(id, name)").execute()
         master_files = master_results.get('files', [])
 
         if master_files:
-            # JIKA ADA: Langsung baca file Master (Cepat)
             st.sidebar.success("🚀 Membaca dari Master Database (GDrive)")
             request = drive_service.files().get_media(fileId=master_files[0]['id'])
             file_bytes = io.BytesIO()
@@ -71,27 +70,29 @@ def load_smart_compiled_data():
             while not done:
                 status, done = downloader.next_chunk()
             file_bytes.seek(0)
-            return pd.read_excel(file_bytes, engine='openpyxl')
+            
+            # BACA SEBAGAI CSV (Sangat Ringan)
+            return pd.read_csv(file_bytes, low_memory=False)
 
         else:
-            # JIKA TIDAK ADA: Jalankan kompilasi lambat
             st.sidebar.warning("⚠️ Master Database belum ada. Melakukan kompilasi awal...")
-            return pd.DataFrame() # Return kosong agar main() memicu recompile
+            return pd.DataFrame()
 
     except Exception as e:
         st.error(f"🔥 Error Drive: {str(e)}")
         return pd.DataFrame()
 
 def force_recompile_and_upload():
-    """Fungsi untuk menggabungkan semua file dan menyimpan balik ke Drive"""
+    """Fungsi untuk menggabungkan semua file dan menyimpan balik ke Drive sebagai CSV"""
     try:
         scope = ["https://www.googleapis.com/auth/drive"]
         creds = Credentials.from_service_account_info(st.secrets["gcp_service_account"], scopes=scope)
         drive_service = build('drive', 'v3', credentials=creds)
         folder_id = "10N4ky9vKH4TVl0PprwfYQDCTeQvLTvXC"
-        master_file_name = "MASTER_COMPILED_DATA.xlsx"
+        
+        # --- PERBAIKAN: Nama output diset ke CSV ---
+        master_file_name = "MASTER_COMPILED_DATA.csv"
 
-        # List semua file kecuali Master
         query = f"'{folder_id}' in parents and name != '{master_file_name}' and trashed = false"
         results = drive_service.files().list(q=query, fields="files(id, name, mimeType)").execute()
         files = results.get('files', [])
@@ -107,7 +108,8 @@ def force_recompile_and_upload():
             fb.seek(0)
             
             try:
-                if f['name'].endswith('.csv'): df_t = pd.read_csv(fb, low_memory=False)
+                if f['name'].endswith('.csv'): 
+                    df_t = pd.read_csv(fb, low_memory=False)
                 else:
                     try: df_t = pd.read_excel(fb, engine='openpyxl')
                     except: df_t = pd.read_excel(fb, engine='xlrd')
@@ -118,21 +120,21 @@ def force_recompile_and_upload():
         if all_dfs:
             final_df = pd.concat(all_dfs, ignore_index=True)
             
-            # Upload balik ke Drive sebagai Master
+            # --- PERBAIKAN: Tulis ke memori sebagai CSV. Beban server turun drastis 90%! ---
             output = io.BytesIO()
-            with pd.ExcelWriter(output, engine='openpyxl') as writer:
-                final_df.to_excel(writer, index=False)
+            final_df.to_csv(output, index=False)
             output.seek(0)
             
-            # Cek jika file lama ada untuk di-delete dulu (opsi replace)
+            # Hapus file master lama jika ada
             q_old = f"'{folder_id}' in parents and name = '{master_file_name}' and trashed = false"
             old_f = drive_service.files().list(q=q_old).execute().get('files', [])
             for of in old_f: drive_service.files().delete(fileId=of['id']).execute()
 
-            media = MediaIoBaseUpload(output, mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+            # Upload CSV baru
+            media = MediaIoBaseUpload(output, mimetype='text/csv')
             drive_service.files().create(body={'name': master_file_name, 'parents': [folder_id]}, media_body=media).execute()
             
-            st.sidebar.success("✅ Database Master terupdate di Drive!")
+            st.sidebar.success("✅ Database Master (CSV) terupdate di Drive!")
             return final_df
     except Exception as e:
         st.sidebar.error(f"Gagal Recompile: {e}")
