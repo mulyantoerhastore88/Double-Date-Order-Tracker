@@ -90,18 +90,21 @@ def load_compiled_data():
                 while not done:
                     status, done = downloader.next_chunk()
                 
-                file_bytes.seek(0)
-                
-                # Handling format file
+                # --- PERBAIKAN: LOGIKA BACA FILE LEBIH PINTAR ---
                 if file_name.endswith('.csv'):
+                    file_bytes.seek(0)
                     df_temp = pd.read_csv(file_bytes, low_memory=False)
-                elif file_name.endswith('.xls'):
-                    # Butuh library xlrd
-                    df_temp = pd.read_excel(file_bytes, engine='xlrd')
                 else:
-                    # xlsx
-                    df_temp = pd.read_excel(file_bytes, engine='openpyxl')
-                    
+                    # Sistem sering 'bohong' (file aslinya xlsx tapi dinamai xls)
+                    # Kita coba baca sebagai xlsx modern dulu
+                    try:
+                        file_bytes.seek(0)
+                        df_temp = pd.read_excel(file_bytes, engine='openpyxl')
+                    except Exception:
+                        # Kalau gagal, berarti memang file xls jadul beneran
+                        file_bytes.seek(0)
+                        df_temp = pd.read_excel(file_bytes, engine='xlrd')
+                        
                 all_dataframes.append(df_temp)
             except Exception as e:
                 st.sidebar.warning(f"Gagal baca {file_name}: {str(e)}")
