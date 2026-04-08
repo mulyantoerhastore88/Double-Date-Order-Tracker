@@ -148,6 +148,8 @@ def force_recompile_and_upload():
         return pd.DataFrame()
 
 # --- 4. DATA PROCESSING ---
+
+@st.cache_data(ttl=3600)  # <--- TAMBAHKAN BARIS SAKTI INI DI SINI
 def process_oms_data(df):
     if df.empty: return df
     df.columns = [str(c).strip() for c in df.columns]
