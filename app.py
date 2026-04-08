@@ -236,7 +236,7 @@ def main():
         st.plotly_chart(fig, use_container_width=True, key="mom_main")
 
         st.divider()
-        st.subheader("🛒 Marketplace Trend (Top 10)")
+        st.subheader("🛒 Marketplace Trend (Top 5)")
         
         # Multiselect for Marketplace
         top_10_names = df_filtered.groupby('Marketplace')['Order Number'].nunique().nlargest(10).index.tolist()
