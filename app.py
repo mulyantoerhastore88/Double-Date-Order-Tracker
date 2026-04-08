@@ -219,11 +219,11 @@ def main():
     with c3: render_card("🛍️ Avg Order Value", f"Rp {df_filtered['Paid Amount'].mean():,.0f}", "#F59E0B")
 
     # --- TABS ---
-    t1, t2, t3, t4 = st.tabs(["📊 MoM BATTLE", "🚚 MARKETPLACE & LOGISTICS", "⏱️ HOURLY VELOCITY", "📋 EXPLORER"])
+    t1, t2, t3, t4 = st.tabs(["📊 DD Summary", "🚚 MARKETPLACE & LOGISTICS", "⏱️ HOURLY VELOCITY", "📋 EXPLORER"])
 
     # TAB 1: MoM (Hanya Tab ini yang pakai seleksi mandiri jika mau membandingkan spesifik)
     with t1:
-        st.subheader("📈 Month-over-Month Battle")
+        st.subheader("📈 Double Date Month-over-Month Order")
         mom_df = df_filtered.groupby('Month_Sort').agg(Orders=('Order Number','nunique'), Revenue=('Paid Amount','sum')).reset_index()
         
         # --- PERBAIKAN FORMAT DI GRAFIK UTAMA ---
