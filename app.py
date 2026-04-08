@@ -6,7 +6,7 @@ import plotly.graph_objects as go
 from datetime import datetime
 from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
-from googleapiclient.http import MediaIoBaseDownload
+from googleapiclient.http import MediaIoBaseDownload, MediaIoBaseUpload
 import io
 import warnings
 
@@ -14,7 +14,7 @@ warnings.filterwarnings('ignore')
 
 # --- 1. PAGE CONFIGURATION ---
 st.set_page_config(
-    page_title="Double Date MoM Tracker",
+    page_title="Double Date Order Tracker Pro",
     page_icon="🎯",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -30,123 +30,128 @@ st.markdown("""
         -webkit-background-clip: text; -webkit-text-fill-color: transparent;
         margin-bottom: 0px; text-align: center;
     }
-    .sub-header { text-align: center; color: #6B7280; font-size: 0.9rem; margin-bottom: 20px; }
-    
     .kpi-card {
-        border-radius: 12px; padding: 1.5rem; color: white;
-        box-shadow: 0 4px 10px rgba(0,0,0,0.05); transition: transform 0.3s;
-        margin-bottom: 1rem; border-top: 4px solid; background: white;
+        border-radius: 12px; padding: 1.2rem; background: white;
+        box-shadow: 0 4px 10px rgba(0,0,0,0.05); border-top: 4px solid;
+        margin-bottom: 1rem;
     }
-    .kpi-card:hover { transform: translateY(-3px); box-shadow: 0 8px 15px rgba(0,0,0,0.1); }
-    .kpi-title { font-size: 0.85rem; font-weight: 700; text-transform: uppercase; color: #6B7280; margin-bottom: 8px; }
-    .kpi-val { font-size: 2rem; font-weight: 900; color: #111827; margin-bottom: 4px; }
-    .kpi-sub { font-size: 0.85rem; font-weight: 600; }
+    .kpi-title { font-size: 0.8rem; font-weight: 700; color: #6B7280; text-transform: uppercase; }
+    .kpi-val { font-size: 1.8rem; font-weight: 800; color: #111827; }
 </style>
 """, unsafe_allow_html=True)
 
-# --- 3. GOOGLE DRIVE LOADER ---
-@st.cache_data(ttl=300)
-def load_compiled_data():
+# --- 3. SMART GOOGLE DRIVE LOADER (MASTER FILE LOGIC) ---
+@st.cache_data(ttl=3600) # Simpan di memori 1 jam jika tidak ada perubahan
+def load_smart_compiled_data():
     try:
-        scope = [
-            "https://www.googleapis.com/auth/spreadsheets",
-            "https://www.googleapis.com/auth/drive.readonly"
-        ]
+        # PENTING: Gunakan scope 'drive' penuh agar bisa menulis/upload file
+        scope = ["https://www.googleapis.com/auth/drive"]
         
         if "gcp_service_account" not in st.secrets:
             st.error("❌ Secrets 'gcp_service_account' belum di-set!")
             return pd.DataFrame()
 
-        creds_dict = st.secrets["gcp_service_account"]
-        creds = Credentials.from_service_account_info(creds_dict, scopes=scope)
+        creds = Credentials.from_service_account_info(st.secrets["gcp_service_account"], scopes=scope)
         drive_service = build('drive', 'v3', credentials=creds)
-        
         folder_id = "10N4ky9vKH4TVl0PprwfYQDCTeQvLTvXC"
-        
-        st.sidebar.info("🔍 Memindai folder Drive...")
-        
-        # Ambil file xls, xlsx, csv
-        query = f"'{folder_id}' in parents and trashed = false"
-        results = drive_service.files().list(q=query, fields="files(id, name, mimeType)", pageSize=100).execute()
+        master_file_name = "MASTER_COMPILED_DATA.xlsx"
+
+        # 1. Cek apakah file Master sudah ada
+        query_master = f"'{folder_id}' in parents and name = '{master_file_name}' and trashed = false"
+        master_results = drive_service.files().list(q=query_master, fields="files(id, name)").execute()
+        master_files = master_results.get('files', [])
+
+        if master_files:
+            # JIKA ADA: Langsung baca file Master (Cepat)
+            st.sidebar.success("🚀 Membaca dari Master Database (GDrive)")
+            request = drive_service.files().get_media(fileId=master_files[0]['id'])
+            file_bytes = io.BytesIO()
+            downloader = MediaIoBaseDownload(file_bytes, request)
+            done = False
+            while not done:
+                status, done = downloader.next_chunk()
+            file_bytes.seek(0)
+            return pd.read_excel(file_bytes, engine='openpyxl')
+
+        else:
+            # JIKA TIDAK ADA: Jalankan kompilasi lambat
+            st.sidebar.warning("⚠️ Master Database belum ada. Melakukan kompilasi awal...")
+            return pd.DataFrame() # Return kosong agar main() memicu recompile
+
+    except Exception as e:
+        st.error(f"🔥 Error Drive: {str(e)}")
+        return pd.DataFrame()
+
+def force_recompile_and_upload():
+    """Fungsi untuk menggabungkan semua file dan menyimpan balik ke Drive"""
+    try:
+        scope = ["https://www.googleapis.com/auth/drive"]
+        creds = Credentials.from_service_account_info(st.secrets["gcp_service_account"], scopes=scope)
+        drive_service = build('drive', 'v3', credentials=creds)
+        folder_id = "10N4ky9vKH4TVl0PprwfYQDCTeQvLTvXC"
+        master_file_name = "MASTER_COMPILED_DATA.xlsx"
+
+        # List semua file kecuali Master
+        query = f"'{folder_id}' in parents and name != '{master_file_name}' and trashed = false"
+        results = drive_service.files().list(q=query, fields="files(id, name, mimeType)").execute()
         files = results.get('files', [])
-        
-        if not files:
-            st.sidebar.error("❌ Folder kosong!")
-            return pd.DataFrame()
-            
-        all_dataframes = []
-        progress_bar = st.sidebar.progress(0)
-        
-        for i, file in enumerate(files):
-            file_id = file['id']
-            file_name = file['name']
-            mime_type = file['mimeType']
+
+        all_dfs = []
+        pbar = st.sidebar.progress(0)
+        for i, f in enumerate(files):
+            request = drive_service.files().get_media(fileId=f['id'])
+            fb = io.BytesIO()
+            downloader = MediaIoBaseDownload(fb, request)
+            done = False
+            while not done: status, done = downloader.next_chunk()
+            fb.seek(0)
             
             try:
-                request = drive_service.files().get_media(fileId=file_id)
-                file_bytes = io.BytesIO()
-                downloader = MediaIoBaseDownload(file_bytes, request)
-                done = False
-                while not done:
-                    status, done = downloader.next_chunk()
-                
-                # --- PERBAIKAN: LOGIKA BACA FILE LEBIH PINTAR ---
-                if file_name.endswith('.csv'):
-                    file_bytes.seek(0)
-                    df_temp = pd.read_csv(file_bytes, low_memory=False)
+                if f['name'].endswith('.csv'): df_t = pd.read_csv(fb, low_memory=False)
                 else:
-                    # Sistem sering 'bohong' (file aslinya xlsx tapi dinamai xls)
-                    # Kita coba baca sebagai xlsx modern dulu
-                    try:
-                        file_bytes.seek(0)
-                        df_temp = pd.read_excel(file_bytes, engine='openpyxl')
-                    except Exception:
-                        # Kalau gagal, berarti memang file xls jadul beneran
-                        file_bytes.seek(0)
-                        df_temp = pd.read_excel(file_bytes, engine='xlrd')
-                        
-                all_dataframes.append(df_temp)
-            except Exception as e:
-                st.sidebar.warning(f"Gagal baca {file_name}: {str(e)}")
-                
-            progress_bar.progress((i + 1) / len(files))
+                    try: df_t = pd.read_excel(fb, engine='openpyxl')
+                    except: df_t = pd.read_excel(fb, engine='xlrd')
+                all_dfs.append(df_t)
+            except: pass
+            pbar.progress((i+1)/len(files))
+
+        if all_dfs:
+            final_df = pd.concat(all_dfs, ignore_index=True)
             
-        if all_dataframes:
-            df_master = pd.concat(all_dataframes, ignore_index=True)
-            st.sidebar.success(f"✅ Sukses: {len(df_master):,} Baris Data Mentah")
-            return df_master
-        else:
-            return pd.DataFrame()
+            # Upload balik ke Drive sebagai Master
+            output = io.BytesIO()
+            with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                final_df.to_excel(writer, index=False)
+            output.seek(0)
             
+            # Cek jika file lama ada untuk di-delete dulu (opsi replace)
+            q_old = f"'{folder_id}' in parents and name = '{master_file_name}' and trashed = false"
+            old_f = drive_service.files().list(q=q_old).execute().get('files', [])
+            for of in old_f: drive_service.files().delete(fileId=of['id']).execute()
+
+            media = MediaIoBaseUpload(output, mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+            drive_service.files().create(body={'name': master_file_name, 'parents': [folder_id]}, media_body=media).execute()
+            
+            st.sidebar.success("✅ Database Master terupdate di Drive!")
+            return final_df
     except Exception as e:
-        st.sidebar.error(f"🔥 Error Drive: {str(e)}")
+        st.sidebar.error(f"Gagal Recompile: {e}")
         return pd.DataFrame()
 
 # --- 4. DATA PROCESSING ---
 def process_oms_data(df):
     if df.empty: return df
-    
-    # Bersihkan nama kolom
     df.columns = [str(c).strip() for c in df.columns]
-    
-    # Filter kolom yang dibutuhkan saja untuk meringankan memori
     needed_cols = ['Marketplace', 'Order Date', 'Order Number', 'Paid Amount', 'Shipping Provider']
-    existing_cols = [c for c in needed_cols if c in df.columns]
-    df = df[existing_cols].copy()
+    df = df[[c for c in needed_cols if c in df.columns]].copy()
     
-    # 1. Cleaning Tanggal (Format: 03/03/2026, 00:00:38)
     if 'Order Date' in df.columns:
-        # Hapus spasi berlebih
-        df['Order Date'] = df['Order Date'].astype(str).str.strip()
-        # Parse tanggal (dd/mm/yyyy, HH:MM:SS)
         df['Order Date'] = pd.to_datetime(df['Order Date'], format='%d/%m/%Y, %H:%M:%S', errors='coerce')
-        
-        # Ekstrak data untuk analisa
-        df['Campaign_Month'] = df['Order Date'].dt.strftime('%b %Y') # Contoh: Mar 2026
+        df['Campaign_Month'] = df['Order Date'].dt.strftime('%b %Y')
         df['Order_Hour'] = df['Order Date'].dt.hour
         df['Month_Sort'] = df['Order Date'].dt.to_period('M')
+        df['Order_Date_Only'] = df['Order Date'].dt.date
         
-    # 2. Cleaning Paid Amount
     if 'Paid Amount' in df.columns:
         df['Paid Amount'] = df['Paid Amount'].astype(str).str.replace(',', '').str.replace('Rp', '').str.strip()
         df['Paid Amount'] = pd.to_numeric(df['Paid Amount'], errors='coerce').fillna(0)
@@ -156,214 +161,97 @@ def process_oms_data(df):
 # --- 5. MAIN DASHBOARD ---
 def main():
     st.markdown('<div class="main-header">🎯 Double Date MoM Battle</div>', unsafe_allow_html=True)
-    st.markdown('<div class="sub-header">Month-over-Month Campaign Performance (Unique Orders & Paid Amount)</div>', unsafe_allow_html=True)
+    
+    # --- SIDEBAR CONTROLS ---
+    with st.sidebar:
+        st.markdown("### 💾 Data Synchronization")
+        if st.button("🔄 Force Re-Sync & Compile All", use_container_width=True, type="primary"):
+            st.cache_data.clear()
+            force_recompile_and_upload()
+            st.rerun()
+        
+        st.markdown("---")
+        st.markdown("### 📅 Global Monthly Filter")
+        st.caption("Berlaku untuk Tab 2, 3, dan 4")
+
+    # Load Data
+    df_raw = load_smart_compiled_data()
+    if df_raw.empty:
+        df_raw = force_recompile_and_upload()
+    
+    df = process_oms_data(df_raw)
+    if df.empty: return st.info("Menunggu data...")
+
+    # Data Level Order (Unique)
+    df_order = df.drop_duplicates(subset=['Order Number']).copy()
+
+    # Get months for global filter
+    campaign_opts = sorted(df_order['Campaign_Month'].dropna().unique().tolist(), key=lambda x: datetime.strptime(x, '%b %Y'))
     
     with st.sidebar:
-        st.markdown("### ⚙️ Controls")
-        if st.button("🔄 Sync & Compile Data", type="primary", use_container_width=True):
-            st.cache_data.clear()
-            st.rerun()
-            
-    # Load & Process
-    raw_df = load_compiled_data()
-    df = process_oms_data(raw_df)
-    
-    if df.empty:
-        st.info("👋 Menunggu data dari Google Drive.")
-        return
+        sel_months = st.multiselect("Pilih Bulan:", options=campaign_opts, default=campaign_opts)
 
-    # --- MEMBUAT ORDER-LEVEL DATAFRAME (KUNCI AGAR TIDAK DOUBLE/DUPLIKAT) ---
-    # Karena data mentah per item, kita ambil 1 baris saja per Order Number
-    if 'Order Number' in df.columns:
-        df_order_level = df.drop_duplicates(subset=['Order Number']).copy()
-    else:
-        df_order_level = df.copy()
-        st.warning("Kolom 'Order Number' tidak ditemukan. Kalkulasi mungkin terduplikasi.")
-
-    # --- GLOBAL FILTERS ---
-    st.markdown("### 🔍 Filters")
-    f1, f2 = st.columns(2)
-    
-    with f1:
-        campaign_opts = sorted(df_order_level['Campaign_Month'].dropna().unique().tolist(), key=lambda x: datetime.strptime(x, '%b %Y'))
-        sel_campaigns = st.multiselect("📅 Campaign Month (Double Date):", options=campaign_opts, default=campaign_opts)
-            
-    with f2:
-        mp_options = ["All"] + sorted(df_order_level['Marketplace'].dropna().unique().tolist()) if 'Marketplace' in df_order_level.columns else ["All"]
-        sel_mp = st.selectbox("🛒 Marketplace:", mp_options)
-
-    # Apply Filter ke Data Level Order
-    df_filtered = df_order_level.copy()
-    if sel_campaigns:
-        df_filtered = df_filtered[df_filtered['Campaign_Month'].isin(sel_campaigns)]
-    if sel_mp != "All":
-        df_filtered = df_filtered[df_filtered['Marketplace'] == sel_mp]
-
-    if df_filtered.empty:
-        st.warning("⚠️ Tidak ada data untuk filter tersebut.")
-        return
+    # Apply global filter
+    df_filtered = df_order[df_order['Campaign_Month'].isin(sel_months)] if sel_months else df_order
 
     # --- KPI CARDS ---
-    tot_orders = df_filtered['Order Number'].nunique()
-    tot_paid = df_filtered['Paid Amount'].sum()
-    avg_order_value = tot_paid / tot_orders if tot_orders > 0 else 0
-
-    def render_card(title, val, sub, border_col, sub_col):
-        return f'<div class="kpi-card" style="border-top-color: {border_col};"><div class="kpi-title">{title}</div><div class="kpi-val">{val}</div><div class="kpi-sub" style="color:{sub_col};">{sub}</div></div>'
-
     c1, c2, c3 = st.columns(3)
-    with c1: st.markdown(render_card("🛒 Total Unique Orders", f"{tot_orders:,}", "Total Pesanan", "#3B82F6", "#3B82F6"), unsafe_allow_html=True)
-    with c2: st.markdown(render_card("💰 Total Paid Amount", f"Rp {tot_paid/1e6:,.1f} Jt" if tot_paid >= 1e6 else f"Rp {tot_paid:,.0f}", "Total Pendapatan", "#10B981", "#10B981"), unsafe_allow_html=True)
-    with c3: st.markdown(render_card("🛍️ Avg Order Value (AOV)", f"Rp {avg_order_value:,.0f}", "Rata-rata belanja per pesanan", "#F59E0B", "#F59E0B"), unsafe_allow_html=True)
+    def render_card(title, val, color):
+        st.markdown(f'<div class="kpi-card" style="border-top-color:{color}"><div class="kpi-title">{title}</div><div class="kpi-val">{val}</div></div>', unsafe_allow_html=True)
 
-    st.divider()
+    with c1: render_card("🛒 Total Orders", f"{len(df_filtered):,}", "#3B82F6")
+    with c2: render_card("💰 Paid Amount", f"Rp {df_filtered['Paid Amount'].sum():,.0f}", "#10B981")
+    with c3: render_card("🛍️ Avg Order Value", f"Rp {df_filtered['Paid Amount'].mean():,.0f}", "#F59E0B")
 
     # --- TABS ---
-    t1, t2, t3 = st.tabs(["📊 MoM PERFORMANCE", "🚚 MARKETPLACE & LOGISTICS", "⏱️ HOURLY VELOCITY"])
+    t1, t2, t3, t4 = st.tabs(["📊 MoM BATTLE", "🚚 MARKETPLACE & LOGISTICS", "⏱️ HOURLY VELOCITY", "📋 EXPLORER"])
 
-    # === TAB 1: MoM PERFORMANCE ===
+    # TAB 1: MoM (Hanya Tab ini yang pakai seleksi mandiri jika mau membandingkan spesifik)
     with t1:
-        st.subheader("📈 Double Date Battle: Month-over-Month")
-        st.caption("Perbandingan performa antar bulan. Data di bawah sudah berdasarkan Unique Order.")
-        
-        # Agregasi per bulan (Urut berdasarkan Waktu)
-        mom_df = df_filtered.groupby('Month_Sort').agg(
-            Orders=('Order Number', 'nunique'),
-            Paid_Amount=('Paid Amount', 'sum')
-        ).reset_index()
-        
+        st.subheader("📈 Month-over-Month Battle")
+        mom_df = df_filtered.groupby('Month_Sort').agg(Orders=('Order Number','nunique'), Revenue=('Paid Amount','sum')).reset_index()
         mom_df['Month_Str'] = mom_df['Month_Sort'].dt.strftime('%b %Y')
         
-        # Chart Combo (Bar Orders, Line Paid Amount)
-        fig_mom = go.Figure()
-        
-        fig_mom.add_trace(go.Bar(
-            x=mom_df['Month_Str'], y=mom_df['Orders'],
-            name='Unique Orders',
-            marker_color='#6366F1',
-            text=[f"{x:,}" for x in mom_df['Orders']], textposition='auto'
-        ))
-        
-        fig_mom.add_trace(go.Scatter(
-            x=mom_df['Month_Str'], y=mom_df['Paid_Amount'],
-            name='Paid Amount (Rp)',
-            mode='lines+markers',
-            line=dict(color='#10B981', width=3),
-            yaxis='y2'
-        ))
-        
-        fig_mom.update_layout(
-            height=450, hovermode="x unified",
-            yaxis=dict(title="Total Orders", showgrid=False),
-            yaxis2=dict(title="Paid Amount (Rp)", overlaying='y', side='right', showgrid=True, gridcolor='rgba(0,0,0,0.05)'),
-            legend=dict(orientation="h", y=1.1, x=0.5, xanchor="center"),
-            plot_bgcolor='white', margin=dict(t=10, b=10, l=10, r=10)
-        )
-        st.plotly_chart(fig_mom, use_container_width=True)
+        fig = go.Figure()
+        fig.add_trace(go.Bar(x=mom_df['Month_Str'], y=mom_df['Orders'], name='Orders', marker_color='#6366F1', text=mom_df['Orders']))
+        fig.add_trace(go.Scatter(x=mom_df['Month_Str'], y=mom_df['Revenue'], name='Revenue', yaxis='y2', line=dict(color='#10B981', width=3)))
+        fig.update_layout(yaxis2=dict(overlaying='y', side='right'), legend=dict(orientation="h", y=1.1))
+        st.plotly_chart(fig, use_container_width=True, key="mom_main")
 
         st.divider()
-
-        # --- TREN MARKETPLACE TOP 6 ---
-        st.subheader("🛒 Trend Order by Marketplace (Top 6)")
-        st.caption("Melihat fluktuasi naik-turun orderan dari bulan ke bulan pada 6 platform penyumbang order terbesar.")
+        st.subheader("🛒 Marketplace Trend (Top 10)")
         
-        if 'Marketplace' in df_filtered.columns:
-            # 1. Cari Top 6 Marketplace
-            top_6_mp = df_filtered.groupby('Marketplace')['Order Number'].nunique().nlargest(6).index.tolist()
-            
-            # 2. Filter hanya Top 6 dan Agregasi per Bulan
-            mp_trend_df = df_filtered[df_filtered['Marketplace'].isin(top_6_mp)].groupby(['Month_Sort', 'Marketplace'])['Order Number'].nunique().reset_index()
-            mp_trend_df['Month_Str'] = mp_trend_df['Month_Sort'].dt.strftime('%b %Y')
-            mp_trend_df = mp_trend_df.sort_values('Month_Sort')
+        # Multiselect for Marketplace
+        top_10_names = df_filtered.groupby('Marketplace')['Order Number'].nunique().nlargest(10).index.tolist()
+        sel_mp_trend = st.multiselect("Pilih Marketplace:", options=top_10_names, default=top_10_names[:5])
+        
+        if sel_mp_trend:
+            mp_trend = df_filtered[df_filtered['Marketplace'].isin(sel_mp_trend)].groupby(['Month_Sort', 'Marketplace'])['Order Number'].nunique().reset_index()
+            mp_trend['Month_Str'] = mp_trend['Month_Sort'].dt.strftime('%b %Y')
+            fig_mp = px.line(mp_trend, x='Month_Str', y='Order Number', color='Marketplace', markers=True)
+            st.plotly_chart(fig_mp, use_container_width=True, key="mp_trend_multi")
 
-            # 3. Buat Line Chart Interaktif
-            fig_mp_trend = px.line(
-                mp_trend_df, x='Month_Str', y='Order Number', color='Marketplace',
-                markers=True,
-                category_orders={"Month_Str": mom_df['Month_Str'].tolist()},
-                color_discrete_sequence=px.colors.qualitative.Bold
-            )
-            
-            fig_mp_trend.update_layout(
-                height=400, hovermode="x unified",
-                xaxis_title="", yaxis_title="Total Orders",
-                legend_title="Marketplace",
-                plot_bgcolor='white', margin=dict(t=10, b=10, l=10, r=10)
-            )
-            fig_mp_trend.update_yaxes(showgrid=True, gridcolor='rgba(0,0,0,0.05)')
-            fig_mp_trend.update_traces(line=dict(width=3), marker=dict(size=8))
-            
-            st.plotly_chart(fig_mp_trend, use_container_width=True)
-        else:
-            st.info("Kolom 'Marketplace' tidak ditemukan.")
-
-    # === TAB 2: MARKETPLACE & LOGISTICS ===
+    # TAB 2: Marketplace & Logistics (Terpengaruh Global Filter)
     with t2:
-        col_mp, col_log = st.columns(2)
-        
-        with col_mp:
-            st.subheader("🛒 Marketplace Share (by Orders)")
-            if 'Marketplace' in df_filtered.columns:
-                mp_df = df_filtered.groupby('Marketplace')['Order Number'].nunique().reset_index()
-                fig_mp = px.pie(mp_df, values='Order Number', names='Marketplace', hole=0.4, color_discrete_sequence=px.colors.qualitative.Pastel)
-                fig_mp.update_traces(textinfo='percent+label', textposition='inside')
-                fig_mp.update_layout(showlegend=False, margin=dict(t=30, b=0, l=0, r=0))
-                
-                # --- PERBAIKAN: Tambahkan parameter key di sini ---
-                st.plotly_chart(fig_mp, use_container_width=True, key="pie_chart_marketplace_share")
+        st.subheader(f"📊 Logistics & Platform Share ({', '.join(sel_months)})")
+        c_m, c_l = st.columns(2)
+        with c_m:
+            mp_share = df_filtered.groupby('Marketplace')['Order Number'].nunique().reset_index()
+            st.plotly_chart(px.pie(mp_share, values='Order Number', names='Marketplace', hole=0.4), key="mp_share_pie")
+        with c_l:
+            log_load = df_filtered.groupby('Shipping Provider')['Order Number'].nunique().nlargest(10).reset_index()
+            st.plotly_chart(px.bar(log_load, x='Order Number', y='Shipping Provider', orientation='h'), key="log_bar")
 
-        with col_log:
-            st.subheader("🚚 Top 10 Shipping Provider Load")
-            if 'Shipping Provider' in df_filtered.columns:
-                # Bersihkan nama kurir yang kosong
-                log_df = df_filtered[df_filtered['Shipping Provider'].notna() & (df_filtered['Shipping Provider'] != '')]
-                
-                log_df = log_df.groupby('Shipping Provider')['Order Number'].nunique().reset_index()
-                log_df = log_df.sort_values('Order Number', ascending=True).tail(10)
-                
-                fig_log = px.bar(log_df, x='Order Number', y='Shipping Provider', orientation='h', color_discrete_sequence=['#F59E0B'])
-                fig_log.update_traces(texttemplate='%{x:,}', textposition='outside')
-                fig_log.update_layout(xaxis_title="Total Orders", yaxis_title="", plot_bgcolor='white', margin=dict(t=30, b=0, l=0, r=0))
-                
-                # --- PERBAIKAN: Tambahkan parameter key di sini juga agar aman ---
-                st.plotly_chart(fig_log, use_container_width=True, key="bar_chart_shipping_load")
-                
-    # === TAB 3: HOURLY VELOCITY ===
+    # TAB 3: Hourly Velocity (Terpengaruh Global Filter)
     with t3:
-        st.subheader("⏱️ Hourly Traffic (Kapan Order Masuk Terbanyak?)")
-        st.caption("Membantu operasional gudang menebak jam sibuk (peak hour) selama Double Date.")
-        
-        if 'Order_Hour' in df_filtered.columns:
-            # Agregasi jam dari SEMUA campaign terpilih
-            hour_df = df_filtered.groupby('Order_Hour')['Order Number'].nunique().reset_index()
-            
-            # Pastikan 24 jam lengkap (0 - 23)
-            all_hours = pd.DataFrame({'Order_Hour': range(24)})
-            hour_df = pd.merge(all_hours, hour_df, on='Order_Hour', how='left').fillna(0)
-            
-            # Format jam untuk X-axis
-            hour_df['Hour_Label'] = hour_df['Order_Hour'].apply(lambda x: f"{int(x):02d}:00")
-            
-            fig_hour = go.Figure()
-            fig_hour.add_trace(go.Bar(
-                x=hour_df['Hour_Label'], y=hour_df['Order Number'],
-                marker_color='#3B82F6',
-                text=[f"{x:,.0f}" if x > 0 else "" for x in hour_df['Order Number']],
-                textposition='outside'
-            ))
-            
-            fig_hour.update_layout(
-                height=400, xaxis_title="Jam (00:00 - 23:00)", yaxis_title="Total Orders",
-                plot_bgcolor='white', hovermode="x unified",
-                margin=dict(t=20, b=20, l=10, r=10)
-            )
-            fig_hour.update_yaxes(showgrid=True, gridcolor='rgba(0,0,0,0.05)')
-            st.plotly_chart(fig_hour, use_container_width=True)
-            
-    # --- FOOTER ---
-    st.divider()
-    with st.expander("📋 Tampilkan Data Mentah (Unique Orders)"):
-        st.dataframe(df_filtered.sort_values('Order Date', ascending=False), use_container_width=True, hide_index=True)
+        st.subheader(f"⏱️ Hourly Peaks ({', '.join(sel_months)})")
+        hr_df = df_filtered.groupby('Order_Hour')['Order Number'].nunique().reset_index()
+        fig_hr = px.bar(hr_df, x='Order_Hour', y='Order Number', color='Order Number')
+        st.plotly_chart(fig_hr, use_container_width=True, key="hourly_v")
+
+    # TAB 4: Explorer
+    with t4:
+        st.dataframe(df_filtered.sort_values('Order Date', ascending=False), use_container_width=True)
 
 if __name__ == "__main__":
     main()
