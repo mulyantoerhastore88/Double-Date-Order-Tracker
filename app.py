@@ -148,8 +148,7 @@ def force_recompile_and_upload():
         return pd.DataFrame()
 
 # --- 4. DATA PROCESSING ---
-
-@st.cache_data(ttl=3600)  # <--- TAMBAHKAN BARIS SAKTI INI DI SINI
+@st.cache_data(ttl=3600)
 def process_oms_data(df):
     if df.empty: return df
     df.columns = [str(c).strip() for c in df.columns]
@@ -158,7 +157,12 @@ def process_oms_data(df):
     
     if 'Order Date' in df.columns:
         df['Order Date'] = pd.to_datetime(df['Order Date'], format='%d/%m/%Y, %H:%M:%S', errors='coerce')
-        df['Campaign_Month'] = df['Order Date'].dt.strftime('%b %Y')
+        
+        # --- PERBAIKAN: Format Campaign dengan tambahan Double Date (Contoh: Oct 2025 (10.10)) ---
+        df['Campaign_Month'] = df['Order Date'].apply(
+            lambda x: f"{x.strftime('%b %Y')} ({x.month}.{x.month})" if pd.notna(x) else np.nan
+        )
+        
         df['Order_Hour'] = df['Order Date'].dt.hour
         df['Month_Sort'] = df['Order Date'].dt.to_period('M')
         df['Order_Date_Only'] = df['Order Date'].dt.date
@@ -221,7 +225,9 @@ def main():
     with t1:
         st.subheader("📈 Month-over-Month Battle")
         mom_df = df_filtered.groupby('Month_Sort').agg(Orders=('Order Number','nunique'), Revenue=('Paid Amount','sum')).reset_index()
-        mom_df['Month_Str'] = mom_df['Month_Sort'].dt.strftime('%b %Y')
+        
+        # --- PERBAIKAN FORMAT DI GRAFIK UTAMA ---
+        mom_df['Month_Str'] = mom_df['Month_Sort'].apply(lambda x: f"{x.strftime('%b %Y')} ({x.month}.{x.month})")
         
         fig = go.Figure()
         fig.add_trace(go.Bar(x=mom_df['Month_Str'], y=mom_df['Orders'], name='Orders', marker_color='#6366F1', text=mom_df['Orders']))
@@ -238,7 +244,10 @@ def main():
         
         if sel_mp_trend:
             mp_trend = df_filtered[df_filtered['Marketplace'].isin(sel_mp_trend)].groupby(['Month_Sort', 'Marketplace'])['Order Number'].nunique().reset_index()
-            mp_trend['Month_Str'] = mp_trend['Month_Sort'].dt.strftime('%b %Y')
+            
+            # --- PERBAIKAN FORMAT DI GRAFIK TREN MARKETPLACE ---
+            mp_trend['Month_Str'] = mp_trend['Month_Sort'].apply(lambda x: f"{x.strftime('%b %Y')} ({x.month}.{x.month})")
+            
             fig_mp = px.line(mp_trend, x='Month_Str', y='Order Number', color='Marketplace', markers=True)
             st.plotly_chart(fig_mp, use_container_width=True, key="mp_trend_multi")
 
